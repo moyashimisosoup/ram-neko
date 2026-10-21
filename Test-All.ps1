@@ -4,6 +4,8 @@ $ErrorActionPreference = 'Stop'
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "$PSScriptRoot\Test-TrimSafety.ps1"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "$PSScriptRoot\Test-PostTrim.ps1"
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "$PSScriptRoot\Test-Diagnostics.ps1"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -File "$PSScriptRoot\Test-GadgetSupport.ps1"

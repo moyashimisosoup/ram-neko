@@ -1,5 +1,7 @@
 # M2 first increment: same-handle identity safety
 
+Checkpoint: this document describes the M2 identity increment at `5dff729bebbff4e26cd5785428d50f8f7a55b77d`. The subsequent [M3 observation increment](M3-OBSERVATION.md) adds same-handle baseline snapshots and read-only delayed measurements; adaptive decisions remain disabled.
+
 Scope: strengthen the existing trim operation, without enabling adaptive pressure scoring, new target classes or priority changes. This increment continues PR #1 on its existing branch; M1 remains observation-only. Main and the live installation are not replaced.
 
 ## Implementation

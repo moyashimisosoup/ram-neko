@@ -5,6 +5,11 @@
 !/README.md
 !/MemoryWatch.ps1
 !/TrimSafety.cs
+!/PostTrimObserver.cs
+!/PostTrimTestDoubles.cs
+!/Test-PostTrim.ps1
+!/Test-PostTrimRealtime.ps1
+!/docs/M3-OBSERVATION.md
 !/Test-TrimSafety.ps1
 !/docs/M2-IDENTITY.md
 !/MiniUI.ps1

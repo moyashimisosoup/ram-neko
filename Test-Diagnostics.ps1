@@ -18,7 +18,7 @@ Assert ($null -eq $first.Metrics['cpu.system_percent'].Value -and $first.Metrics
 Assert ($first.Metrics['paging.total_faults_per_second'].Value -eq 1234 -and $first.Metrics['paging.read_operations_per_second'].Value -eq 2) 'total faults and paging read operations stay distinct without a percent cap'
 Assert ($null -eq $first.Metrics['paging.hard_faults_per_second'].Value -and $first.Metrics['interaction.app_switch_ms'].Status -eq 'unavailable') 'unmeasured hard-fault count and responsiveness are explicit missing fields'
 Assert ([RamNeko.Diagnostics.DiagnosticSampler]::PagesToBytes(2048,4096) -eq 8388608) 'commit pages convert to bytes'
-$overflow=$false;try{[RamNeko.Diagnostics.DiagnosticSampler]::PagesToBytes([ulong]::MaxValue,4096)|Out-Null}catch{$overflow=$true}
+$overflow=$false;try{[RamNeko.Diagnostics.DiagnosticSampler]::PagesToBytes([uint64]::MaxValue,4096)|Out-Null}catch{$overflow=$_.Exception.ToString() -match 'OverflowException'}
 Assert $overflow 'overflow cannot become a false byte measurement'
 $next=New-Object RamNeko.Diagnostics.RawSnapshot
 $next.Idle=70;$next.Kernel=150;$next.User=150;$next.ProcessorCount=4

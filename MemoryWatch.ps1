@@ -20,7 +20,7 @@ function Get-MemoryDecision($AvailableMB, $TotalMB, $LowSamples, $LastActionUtc,
 }
 
 function Initialize-MemoryNative {
-    if (-not ('RamNeko.Safety.TrimGuard' -as [type])) { Add-Type -Path "$PSScriptRoot\TrimSafety.cs" }
+    if (-not ('RamNeko.Safety.TrimGuard' -as [type])) { Add-Type -Path @("$PSScriptRoot\TrimSafety.cs","$PSScriptRoot\PostTrimObserver.cs") -ReferencedAssemblies System,System.Core,System.Web.Extensions }
     if ('MemoryWatchNative' -as [type]) { return }
     Add-Type -TypeDefinition @'
 using System;
@@ -58,10 +58,16 @@ function Get-MemorySnapshot {
     [pscustomobject]@{ AvailableMB = [math]::Round($m.available / 1MB); TotalMB = [math]::Round($m.total / 1MB) }
 }
 
-function Invoke-WorkingSetTrim([RamNeko.Safety.CandidateIdentity]$Identity) {
+function Invoke-WorkingSetTrim([RamNeko.Safety.CandidateIdentity]$Identity,[switch]$Observe) {
     if ($null -eq $Identity -or $Identity.Name -notin $script:trimPolicy.AllowedNames -or
         $Identity.SessionId -ne (Get-Process -Id $PID).SessionId) { throw 'identity_not_allowed' }
-    [RamNeko.Safety.TrimGuard]::Execute($Identity, (New-Object RamNeko.Safety.WindowsTrimNative))
+    if($Observe){
+        $native=New-Object RamNeko.Safety.WindowsTrimNative
+        # Baseline probes add work after the outer focus check. Recheck on this same UI/action thread.
+        $native.BeforeEmpty=[Action]{if((Get-ForegroundProcess).ProcessName -eq $Identity.Name){throw 'foreground_changed_before_trim'}}
+        [RamNeko.Safety.TrimGuard]::ExecuteObserved($Identity,$native)
+    }
+    else{[RamNeko.Safety.TrimGuard]::Execute($Identity, (New-Object RamNeko.Safety.WindowsTrimNative))}
 }
 
 function Get-IdleObservation($Previous, [double]$CpuSeconds, [datetime]$NowUtc) {
@@ -138,7 +144,7 @@ function Write-MemoryLog($Entry) {
     $Entry | ConvertTo-Json -Depth 6 -Compress | Add-Content -LiteralPath $path -Encoding UTF8
 }
 
-function Invoke-MemoryWatch([switch]$Manual, [string]$ProtectedName = '', $DiagnosticsReference = $null) {
+function Invoke-MemoryWatch([switch]$Manual, [string]$ProtectedName = '', $DiagnosticsReference = $null, $EvaluationObserver = $null) {
     New-Item -ItemType Directory -Path $DataDirectory -Force | Out-Null
     # File lock also excludes concurrent manual invocations. No persistent process.
     try { $lock = [IO.File]::Open((Join-Path $DataDirectory 'monitor.lock'), 'OpenOrCreate', 'ReadWrite', 'None') }
@@ -175,7 +181,14 @@ function Invoke-MemoryWatch([switch]$Manual, [string]$ProtectedName = '', $Diagn
                 try {
                     $result.SelectedStartUtcTicks = $process.TrimIdentity.StartUtcTicks
                     $result.SelectedSessionId = $process.TrimIdentity.SessionId
-                    Invoke-WorkingSetTrim $process.TrimIdentity
+                    $receipt=Invoke-WorkingSetTrim $process.TrimIdentity -Observe:($null -ne $EvaluationObserver)
+                    $result.ObservationScheduling='disabled'
+                    if($null -ne $EvaluationObserver){
+                        try{
+                            $result.ObservationAttemptId=$receipt.AttemptId
+                            $result.ObservationScheduling=$EvaluationObserver.Enqueue(($receipt|ConvertTo-Json -Depth 8 -Compress))
+                        }catch{$result.ObservationScheduling='observation_unavailable'}
+                    }
                     $process.Refresh()
                     $result.AfterMB = [math]::Round($process.WorkingSet64/1MB)
                 }

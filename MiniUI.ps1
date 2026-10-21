@@ -28,6 +28,7 @@ $script:settingsPalette=$null
 $script:settingsAppearance=$null
 $script:diagnosticsText=$null
 $script:diagnosticEngine=$null
+$script:postTrimEngine=$null
 $script:diagnosticSnapshot=$null
 $script:lastDiagnosticJson=$null
 $script:lastHeartbeat=[datetime]::MinValue
@@ -274,6 +275,7 @@ function Update-DiagnosticsDisplay {
         if($script:diagnosticSnapshot){
             $s=$script:diagnosticSnapshot
             $lines=@("M1: 観測専用 / 整理判断には未使用", "UTC: $($s.Utc)", "収集時間: $($s.CollectionDurationMs) ms",'')
+            if($script:postTrimEngine){$lines+="整理後観測: 待機 $($script:postTrimEngine.Pending) / エラー $($script:postTrimEngine.LastError)"}
             foreach($property in $s.Metrics.PSObject.Properties){$m=$property.Value;$value=if($null -eq $m.Value){'欠測'}else{[string]$m.Value};$lines+="$($property.Name): $value $($m.Unit) [$($m.Status)] $($m.Reason)"}
             $script:diagnosticsText.Text=$lines -join "`r`n"
         }else{$script:diagnosticsText.Text='診断結果は準備中・無効・取得不可です。欠測値は0として扱いません。整理判断は従来どおりです。'}
@@ -335,7 +337,7 @@ function Update-MiniStatus([switch]$MonitorDue) {
         if (-not $script:protectedName) { throw 'Foreground unknown; cleanup disabled' }
         if ($MonitorDue -and -not $script:paused) {
             $reference=if($script:diagnosticSnapshot){@{Schema=$script:diagnosticSnapshot.Schema;Version=1;Sequence=$script:diagnosticSnapshot.Sequence;Utc=$script:diagnosticSnapshot.Utc;ObservationOnly=$true}}else{$null}
-            $json = Invoke-MemoryWatch -ProtectedName $script:protectedName -DiagnosticsReference $reference
+            $json = Invoke-MemoryWatch -ProtectedName $script:protectedName -DiagnosticsReference $reference -EvaluationObserver $script:postTrimEngine
             $script:lastMonitor = [datetime]::UtcNow
             if ($json) {
                 $entry = $json | ConvertFrom-Json
@@ -390,7 +392,7 @@ function Invoke-MiniCleanup {
         elseif ([MemoryWatchNative]::LastExternalProcessId -ne 0) {
             $script:protectedName = (Get-Process -Id ([MemoryWatchNative]::LastExternalProcessId) -ErrorAction Stop).ProcessName
         } else { throw 'Previous foreground unknown' }
-        $entry = Invoke-MemoryWatch -Manual -ProtectedName $script:protectedName | ConvertFrom-Json
+        $entry = Invoke-MemoryWatch -Manual -ProtectedName $script:protectedName -EvaluationObserver $script:postTrimEngine | ConvertFrom-Json
         Set-CleanupSummary $entry
     } catch { $script:lastResult = '整理保留: '+$_.Exception.Message;Write-GadgetEvent 'manual_deferred' $_.Exception.Message }
     Update-MiniStatus
@@ -509,7 +511,14 @@ try {
     } else {
         try{
             $config=Get-DiagnosticsConfiguration
-            if($config.Enabled){$script:diagnosticEngine=Start-Diagnostics $DataDirectory $config.IntervalSeconds}else{$diagnosticLabel.Text='診断: 無効'}
+            if($config.Enabled){
+                $script:diagnosticEngine=Start-Diagnostics $DataDirectory $config.IntervalSeconds
+                try{
+                    $getter=$script:diagnosticEngine.GetType().GetProperty('LatestJson').GetGetMethod()
+                    $context=[Delegate]::CreateDelegate([Func[string]],$script:diagnosticEngine,$getter)
+                    $script:postTrimEngine=New-Object RamNeko.Safety.PostTrimEngine($DataDirectory,$context)
+                }catch{Write-GadgetEvent 'post_trim_observer_unavailable' $_.Exception.Message}
+            }else{$diagnosticLabel.Text='診断: 無効'}
         }catch{Write-GadgetEvent 'diagnostics_unavailable' $_.Exception.Message;$diagnosticLabel.Text='診断: 取得不可'}
         $hook = [MemoryWatchNative]::StartForegroundTracking($PID)
         if ($hook -eq [IntPtr]::Zero) { throw 'Foreground tracking unavailable' }
@@ -517,6 +526,7 @@ try {
         [Windows.Forms.Application]::Run($form)
     }
 } finally {
+    if($script:postTrimEngine){$script:postTrimEngine.Dispose();[void]$script:postTrimEngine.WaitForStop(1000)}
     if($script:diagnosticEngine){$script:diagnosticEngine.Dispose()}
     Write-GadgetEvent 'exited'
     if($script:logForm -and -not $script:logForm.IsDisposed){$script:logForm.Dispose()}

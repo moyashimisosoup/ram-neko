@@ -14,6 +14,8 @@ Acceptance: deterministic tests for identity/races/missing data, replayed shadow
 
 ## M3: effect measurement and stop conditions
 
+The first observation increment is implemented for review: [M3 before/after/+30/+120-second records](M3-OBSERVATION.md). It adds bounded observation jobs, missing-deadline handling and byte/counter deltas. Cached paging context is not a measurement of a phase-specific interval. Responsiveness trials, automatic exclusion/stop decisions and comparative benefit remain future work as described below.
+
 Create bounded per-attempt evaluation jobs using the existing observer scheduler; never block a UI thread or retain native control handles for 120 seconds. Record a reference/identity before, immediately after, around +30 seconds and +120 seconds. Timestamp actual measurements and missed deadlines. Revalidate identity; a restarted process is not a rebound of the old one.
 
 Record available physical memory, commit, target working set/private bytes, paging reads/input pages, aggregate disk I/O, own CPU/memory/log cost and foreground transitions. Working-set decreases and free-RAM increases are observations, not proof of speed. Missing exact hard faults and application latency remain unavailable until separately instrumented.

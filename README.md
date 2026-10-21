@@ -59,6 +59,8 @@ M1 adds an **observation-only** diagnostic worker (default 60 seconds) and a rea
 
 `data/diagnostics.jsonl` rotates at a strict 5 MiB plus one backup. Configure observation with `diagnostics.json`; disabling it does not disable the legacy monitor. The main state heartbeat is now written at most once per minute, while display/candidate sampling remains at five seconds. The snapshot is cached; diagnostic collection and its log I/O run on a separate worker. No performance improvement or sustained deployment is claimed by merely obtaining counters.
 
+When diagnostics are enabled in the resident UI, successful trims also schedule observation-only before/after/+30s/+120s records in `data/post-trim.jsonl` (strict 5 MiB + one backup, at most 12 pending attempts). Delayed stages reopen a read-only handle and revalidate identity; missed deadlines, exited/restarted targets and failed APIs are explicit missing observations. Working-set rebound and logical I/O deltas do not establish speed improvement. Paging/disk context is cached and age-labelled. Standalone monitor invocations without an observer do not schedule follow-ups. See [M3 observation schema, tests and limitations](docs/M3-OBSERVATION.md).
+
 All runtime files live in `data/`. Monitor/event JSONL logs rotate at 5 MB with one backup each. The viewer shows recent rows; CSV export includes all retained monitor/event rows. Retention depends on file size, not days. Preferences store palette, window mode and position. These files, test output, exports and local audit records are excluded from Git by a reviewed-file allowlist in `.gitignore`.
 
 ## Tests
@@ -66,6 +68,9 @@ All runtime files live in `data/`. Monitor/event JSONL logs rotate at 5 MB with 
 ```powershell
 # Engine, native disposable-process test, logs and off-screen UI tests:
 powershell.exe -NoProfile -File .\Test-All.ps1 -SkipInstalled
+
+# Optional ~120-second native follow-up check; trims only its disposable test host:
+powershell.exe -NoProfile -File .\Test-PostTrimRealtime.ps1
 
 # Also check the installed task and live heartbeat:
 powershell.exe -NoProfile -File .\Test-All.ps1

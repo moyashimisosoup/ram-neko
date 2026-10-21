@@ -99,6 +99,18 @@ function Invoke-WorkingSetTrim($Identity) { throw 'identity_mismatch' }
 $failed=Invoke-MemoryWatch -Manual|ConvertFrom-Json
 Assert ($failed.Results[0].Status -match 'identity_mismatch' -and $script:processBackoff[456] -gt [datetime]::UtcNow) 'identity rejection is logged and retains existing target backoff'
 Assert ($failed.Results[0].SelectedStartUtcTicks -eq 1 -and $failed.Results[0].SelectedSessionId -eq 1) 'attempt log records the selected creation time and session without an image path'
+$s.LastActionUtc=[datetime]::UtcNow.AddMinutes(-2).ToString('o')
+$s|ConvertTo-Json|Set-Content -LiteralPath $path -Encoding UTF8
+function Invoke-WorkingSetTrim($Identity,[switch]$Observe) {
+    $script:trimCalls++
+    if($Observe){[pscustomobject]@{AttemptId='test-attempt';Identity=$Identity;Before=@{};After=@{}}}
+}
+$observer=[pscustomobject]@{Calls=0}
+$observer|Add-Member -MemberType ScriptMethod -Name Enqueue -Value {param($json) $this.Calls++;throw 'log_worker_unavailable'}
+$observedAttempt=Invoke-MemoryWatch -Manual -EvaluationObserver $observer|ConvertFrom-Json
+Assert ($observedAttempt.Results[0].Status -eq 'ok' -and $observedAttempt.Results[0].ObservationScheduling -eq 'observation_unavailable' -and $observer.Calls -eq 1) 'observation scheduling failure cannot turn a successful trim into a retry or bypass cooldown'
+$blocked=$false;try{Invoke-MemoryWatch -Manual -EvaluationObserver $observer|Out-Null}catch{$blocked=$true}
+Assert ($blocked -and $observer.Calls -eq 1) 'manual cooldown remains enforced when observation scheduling failed'
 # Only known test artifacts; never recursively delete a computed directory.
 'state.json','monitor.jsonl','monitor.lock' | ForEach-Object { Remove-Item -LiteralPath (Join-Path $DataDirectory $_) }
 Remove-Item -LiteralPath $DataDirectory

@@ -1,0 +1,12 @@
+{
+  "Version": 1,
+  "AllowedNames": ["chrome", "msedge", "firefox"],
+  "MinimumWorkingSetMB": 150,
+  "MinimumAgeSeconds": 300,
+  "MinimumIdleSeconds": 60,
+  "MaximumCpuCoreFraction": 0.01,
+  "MaximumProcesses": 3,
+  "AutomaticCooldownMinutes": 15,
+  "ManualCooldownSeconds": 60,
+  "DeniedCooldownMinutes": 30
+}

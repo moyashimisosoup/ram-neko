@@ -1,0 +1,19 @@
+# Publish only reviewed application files. Runtime data remains local.
+*
+!/.gitignore
+!/.gitattributes
+!/README.md
+!/MemoryWatch.ps1
+!/MiniUI.ps1
+!/PixelTheme.ps1
+!/GadgetSupport.ps1
+!/GadgetControls.cs
+!/Install.ps1
+!/LaunchHidden.vbs
+!/policy.json
+!/Test-All.ps1
+!/Test-MemoryWatch.ps1
+!/Test-GadgetSupport.ps1
+!/docs/
+!/docs/preview.png
+!/docs/CONTROLS.md

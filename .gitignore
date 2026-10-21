@@ -4,6 +4,9 @@
 !/.gitattributes
 !/README.md
 !/MemoryWatch.ps1
+!/TrimSafety.cs
+!/Test-TrimSafety.ps1
+!/docs/M2-IDENTITY.md
 !/MiniUI.ps1
 !/PixelTheme.ps1
 !/GadgetSupport.ps1

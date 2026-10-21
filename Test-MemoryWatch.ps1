@@ -15,7 +15,8 @@ $m = Get-MemorySnapshot
 Assert ($m.TotalMB -gt 0 -and $m.AvailableMB -ge 0) 'native memory measurement works'
 Assert (@(Get-TrimCandidates chrome 0 | Where-Object ProcessName -eq chrome).Count -eq 0) 'foreground browser family excluded'
 # Exercise the real API only against this isolated test process.
-Invoke-WorkingSetTrim $PID
+$self = Get-Process -Id $PID
+[RamNeko.Safety.TrimGuard]::Execute((New-Object RamNeko.Safety.CandidateIdentity($self.Id, $self.StartTime.ToUniversalTime().Ticks, $self.ProcessName, $self.SessionId)), (New-Object RamNeko.Safety.WindowsTrimNative))
 Assert $true 'real EmptyWorkingSet succeeds on disposable test process'
 $initial = Get-IdleObservation $null 10 $now
 Assert ($initial.IdleSeconds -eq 0) 'new processes require an observation window'
@@ -47,7 +48,7 @@ $emptyChart = Get-MemoryChartData ([pscustomobject]@{TotalMB=16000;AvailableMB=4
 Assert ($emptyChart.CandidateMB -eq 0 -and $emptyChart.CandidateCount -eq 0) 'empty candidate graph is zero'
 $helper = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ArgumentList '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 30"' -WindowStyle Hidden -PassThru
 try {
-    Invoke-WorkingSetTrim $helper.Id
+    [RamNeko.Safety.TrimGuard]::Execute((New-Object RamNeko.Safety.CandidateIdentity($helper.Id, $helper.StartTime.ToUniversalTime().Ticks, $helper.ProcessName, $helper.SessionId)), (New-Object RamNeko.Safety.WindowsTrimNative))
     Assert $true 'real EmptyWorkingSet succeeds on a separate disposable process'
 } finally {
     if (-not $helper.HasExited) { $helper.Kill() }
@@ -59,10 +60,10 @@ $script:trimCalls = 0
 function Get-MemorySnapshot { [pscustomobject]@{ AvailableMB = 1000; TotalMB = 16000 } }
 function Get-ForegroundProcess { [pscustomobject]@{ Id = 123; ProcessName = 'explorer' } }
 function Get-TrimCandidates {
-    $fake=[pscustomobject]@{ Id=456; ProcessName='chrome'; WorkingSet64=200MB }
+    $fake=[pscustomobject]@{ Id=456; ProcessName='chrome'; WorkingSet64=200MB; TrimIdentity=(New-Object RamNeko.Safety.CandidateIdentity(456, 1, 'chrome', 1)) }
     $fake | Add-Member -MemberType ScriptMethod -Name Refresh -Value {} -PassThru
 }
-function Invoke-WorkingSetTrim { $script:trimCalls++ }
+function Invoke-WorkingSetTrim($Identity) { if ($Identity.Id -ne 456) { throw 'Wrong identity passed' }; $script:trimCalls++ }
 1..3 | ForEach-Object {
     Invoke-MemoryWatch | Out-Null
     $path = Join-Path $DataDirectory 'state.json'
@@ -92,6 +93,12 @@ $s|ConvertTo-Json|Set-Content -LiteralPath $path -Encoding UTF8
 $observed=Invoke-MemoryWatch -DiagnosticsReference @{Schema='ram-neko.diagnostics';Version=1;ObservationOnly=$true;OsLow=$true;CommitPercent=100}|ConvertFrom-Json
 Assert ($observed.Action -eq 'observe' -and $script:trimCalls -eq 2) 'new diagnostic pressure values cannot trigger cleanup'
 Assert ($observed.LogSchemaVersion -eq 2 -and $observed.Diagnostics.ObservationOnly) 'optional versioned diagnostics reference preserves legacy log fields'
+$s.LastActionUtc=[datetime]::UtcNow.AddMinutes(-2).ToString('o')
+$s|ConvertTo-Json|Set-Content -LiteralPath $path -Encoding UTF8
+function Invoke-WorkingSetTrim($Identity) { throw 'identity_mismatch' }
+$failed=Invoke-MemoryWatch -Manual|ConvertFrom-Json
+Assert ($failed.Results[0].Status -match 'identity_mismatch' -and $script:processBackoff[456] -gt [datetime]::UtcNow) 'identity rejection is logged and retains existing target backoff'
+Assert ($failed.Results[0].SelectedStartUtcTicks -eq 1 -and $failed.Results[0].SelectedSessionId -eq 1) 'attempt log records the selected creation time and session without an image path'
 # Only known test artifacts; never recursively delete a computed directory.
 'state.json','monitor.jsonl','monitor.lock' | ForEach-Object { Remove-Item -LiteralPath (Join-Path $DataDirectory $_) }
 Remove-Item -LiteralPath $DataDirectory

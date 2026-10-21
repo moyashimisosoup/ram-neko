@@ -20,6 +20,7 @@ function Get-MemoryDecision($AvailableMB, $TotalMB, $LowSamples, $LastActionUtc,
 }
 
 function Initialize-MemoryNative {
+    if (-not ('RamNeko.Safety.TrimGuard' -as [type])) { Add-Type -Path "$PSScriptRoot\TrimSafety.cs" }
     if ('MemoryWatchNative' -as [type]) { return }
     Add-Type -TypeDefinition @'
 using System;
@@ -30,9 +31,6 @@ public static class MemoryWatchNative {
     public ulong total, available, totalPage, availablePage, totalVirtual, availableVirtual, extended;
   }
   [DllImport("kernel32.dll", SetLastError=true)] public static extern bool GlobalMemoryStatusEx(ref Memory m);
-  [DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr OpenProcess(uint access, bool inherit, int id);
-  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool K32EmptyWorkingSet(IntPtr process);
-  [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint id);
   public delegate void WinEvent(IntPtr hook, uint ev, IntPtr window, int obj, int child, uint thread, uint time);
@@ -60,15 +58,10 @@ function Get-MemorySnapshot {
     [pscustomobject]@{ AvailableMB = [math]::Round($m.available / 1MB); TotalMB = [math]::Round($m.total / 1MB) }
 }
 
-function Invoke-WorkingSetTrim([int]$ProcessId) {
-    # Query information + set quota; never terminate or restart a process.
-    $handle = [MemoryWatchNative]::OpenProcess(0x0500, $false, $ProcessId)
-    if ($handle -eq [IntPtr]::Zero) { throw "OpenProcess failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }
-    try {
-        if (-not [MemoryWatchNative]::K32EmptyWorkingSet($handle)) {
-            throw "EmptyWorkingSet failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
-        }
-    } finally { [void][MemoryWatchNative]::CloseHandle($handle) }
+function Invoke-WorkingSetTrim([RamNeko.Safety.CandidateIdentity]$Identity) {
+    if ($null -eq $Identity -or $Identity.Name -notin $script:trimPolicy.AllowedNames -or
+        $Identity.SessionId -ne (Get-Process -Id $PID).SessionId) { throw 'identity_not_allowed' }
+    [RamNeko.Safety.TrimGuard]::Execute($Identity, (New-Object RamNeko.Safety.WindowsTrimNative))
 }
 
 function Get-IdleObservation($Previous, [double]$CpuSeconds, [datetime]$NowUtc) {
@@ -102,15 +95,18 @@ function Get-TrimCandidates([string]$ForegroundName, [int]$ForegroundId, [string
     $rows = @(foreach ($process in @(Get-Process -Name $script:trimPolicy.AllowedNames -ErrorAction SilentlyContinue)) {
         try {
             if ($process.SessionId -ne $session) { continue }
-            $key = "$($process.Id):$($process.StartTime.ToUniversalTime().Ticks)"
+            $startUtc = $process.StartTime.ToUniversalTime()
+            $identity = New-Object RamNeko.Safety.CandidateIdentity($process.Id, $startUtc.Ticks, $process.ProcessName, $process.SessionId)
+            $key = "$($identity.Id):$($identity.StartUtcTicks)"
             $seen[$key] = $true
             $observation = Get-IdleObservation $script:processObservations[$key] $process.TotalProcessorTime.TotalSeconds $now
             $script:processObservations[$key] = $observation
             if ($process.Id -eq $ForegroundId -or $process.ProcessName -eq $ForegroundName -or $process.ProcessName -eq $ProtectedName) {
                 $observation.IdleSeconds = 0; continue
             }
+            $process | Add-Member -NotePropertyName TrimIdentity -NotePropertyValue $identity -Force
             [pscustomobject]@{Process=$process;Id=$process.Id;Name=$process.ProcessName;SessionId=$process.SessionId;
-                AgeSeconds=($now-$process.StartTime.ToUniversalTime()).TotalSeconds;IdleSeconds=$observation.IdleSeconds;
+                AgeSeconds=($now-$startUtc).TotalSeconds;IdleSeconds=$observation.IdleSeconds;
                 WorkingSetMB=$process.WorkingSet64/1MB;BackoffUtc=$script:processBackoff[$process.Id]}
         } catch { continue }
     })
@@ -177,7 +173,9 @@ function Invoke-MemoryWatch([switch]$Manual, [string]$ProtectedName = '', $Diagn
                 if ($current.ProcessName -eq $process.ProcessName -or $process.ProcessName -eq $ProtectedName) { continue }
                 $result = [ordered]@{ Id = $process.Id; Name = $process.ProcessName; BeforeMB = [math]::Round($process.WorkingSet64 / 1MB); Status = 'ok' }
                 try {
-                    Invoke-WorkingSetTrim $process.Id
+                    $result.SelectedStartUtcTicks = $process.TrimIdentity.StartUtcTicks
+                    $result.SelectedSessionId = $process.TrimIdentity.SessionId
+                    Invoke-WorkingSetTrim $process.TrimIdentity
                     $process.Refresh()
                     $result.AfterMB = [math]::Round($process.WorkingSet64/1MB)
                 }

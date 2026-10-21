@@ -47,6 +47,7 @@ Unregister-ScheduledTask -TaskName MemoryWatch-PressureOnly -Confirm:$false
 - At most 3 eligible processes per attempt. Failed targets are excluded for 30 minutes in the current run.
 - Automatic: available physical memory below both 1536 MB and 10% for 3 consecutive samples; minimum 15 minutes between attempts.
 - Manual: same candidate selector, without waiting for pressure, but minimum 60 seconds after any attempt.
+- M2 safety increment: selection captures an immutable PID/start-time/name/session identity; native trim validates it on the same handle used for the operation. Unavailable or mismatched identity skips with the existing failure backoff. See [implementation and limits](docs/M2-IDENTITY.md).
 
 **整理候補量は解放保証量ではありません。** It is a gross sum of resident working sets; shared pages can be counted more than once. The results show per-process working-set change, not purported physical RAM freed. CPU inactivity does not prove that a background tab is dispensable. Some browser processes reject the Windows API with access denied; those failures are logged. No browser is terminated, no files are deleted, and the app does not escalate target permissions.
 

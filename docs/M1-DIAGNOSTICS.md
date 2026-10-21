@@ -1,5 +1,7 @@
 # M1: observation-only diagnostics
 
+Historical scope: this report describes M1 at commit `4ce43984353be2630c15434da131aee7b7ea15ab`. The subsequent [M2 identity increment](M2-IDENTITY.md) changes the native trim path and candidate identity capture; the unchanged-function statements and 69-test count below apply to the M1 checkpoint only.
+
 ## Baseline audit
 
 Checked main at `2f91cb19a8da216c2aa2d286f95f34cd6a50a05a` on 2026-10-21 JST. No open PR, additional remote branch or repository AGENTS.md was found. The existing installed/live suite returned exit 0 with 40 PASS lines before changes. Development uses `codex/m1-diagnostics-settings` in an isolated worktree; the installed main app has not been replaced.

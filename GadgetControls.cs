@@ -30,6 +30,11 @@ public class NekoGadgetButton : Button {
             e.Graphics.DrawLine(b,3,Height-3,Width-3,Height-3); e.Graphics.DrawLine(b,Width-3,3,Width-3,Height-3);
         }
         var text=new Rectangle(down?3:1,down?3:1,Width-3,Height-3);
+        if(Image!=null) {
+            int offset=down?2:0;
+            e.Graphics.DrawImageUnscaled(Image,9+offset,(Height-Image.Height)/2+offset);
+            text.X+=Image.Width+8;text.Width-=Image.Width+8;
+        }
         TextRenderer.DrawText(e.Graphics,Text,Font,text,Enabled?ForeColor:ControlPaint.Dark(BackColor),TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.SingleLine);
         if(Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics,new Rectangle(6,6,Width-12,Height-12));
     }

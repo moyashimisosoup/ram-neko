@@ -69,3 +69,18 @@ function Set-PixelButton($Button) {
 }
 
 Add-Type -Path "$PSScriptRoot\GadgetControls.cs" -ReferencedAssemblies System.Windows.Forms,System.Drawing
+
+function New-SettingsBitmap {
+    $bitmap=New-Object Drawing.Bitmap(16,16)
+    $g=[Drawing.Graphics]::FromImage($bitmap)
+    $brush=New-Object Drawing.SolidBrush([Drawing.ColorTranslator]::FromHtml('#79608F'))
+    try{
+        $g.Clear([Drawing.Color]::Transparent)
+        $g.FillRectangle($brush,5,0,6,16);$g.FillRectangle($brush,0,5,16,6)
+        $g.FillRectangle($brush,2,2,12,12)
+        $g.CompositingMode=[Drawing.Drawing2D.CompositingMode]::SourceCopy
+        $hole=New-Object Drawing.SolidBrush([Drawing.Color]::Transparent)
+        try{$g.FillRectangle($hole,6,6,4,4)}finally{$hole.Dispose()}
+    }finally{$brush.Dispose();$g.Dispose()}
+    return ,$bitmap
+}

@@ -10,7 +10,7 @@ A tiny Windows memory-monitor gadget with a pixel cat, tactile 8-bit controls, m
 - 凸面ボタンはクリック中にへこみ、一時停止・固定の選択中はへこんだ状態を維持。
 - **デスクトップに固定**：位置をロックし、通常アプリの背面へ配置。
 - **前面に固定**：通常アプリより常に前面へ。2つの固定モードは排他的。
-- ラベンダー・ミント・ピーチ・スカイ・ナイトの5配色。配色・位置・固定モードを再起動後も復元。
+- 8bit設定アイコンからラベンダー・ミント・ピーチ・スカイ・ナイトの5配色を選択。配色・位置・固定モードを再起動後も復元。
 - ログ表示、更新、CSV保存。監視・手動整理・結果・配色・固定・表示操作をローカルに記録。
 - ネコの通知領域アイコン。×／隠すで収納、ダブルクリックで復帰、右クリックメニューから終了。
 
@@ -47,6 +47,7 @@ Unregister-ScheduledTask -TaskName MemoryWatch-PressureOnly -Confirm:$false
 - At most 3 eligible processes per attempt. Failed targets are excluded for 30 minutes in the current run.
 - Automatic: available physical memory below both 1536 MB and 10% for 3 consecutive samples; minimum 15 minutes between attempts.
 - Manual: same candidate selector, without waiting for pressure, but minimum 60 seconds after any attempt.
+- M2 safety increment: selection captures an immutable PID/start-time/name/session identity; native trim validates it on the same handle used for the operation. Unavailable or mismatched identity skips with the existing failure backoff. See [implementation and limits](docs/M2-IDENTITY.md).
 
 **整理候補量は解放保証量ではありません。** It is a gross sum of resident working sets; shared pages can be counted more than once. The results show per-process working-set change, not purported physical RAM freed. CPU inactivity does not prove that a background tab is dispensable. Some browser processes reject the Windows API with access denied; those failures are logged. No browser is terminated, no files are deleted, and the app does not escalate target permissions.
 
@@ -54,7 +55,13 @@ Windows already reclaims working sets as needed. Unconditional periodic RAM purg
 
 ## Logs and settings
 
-All runtime files live in `data/`. Monitor/event JSONL logs rotate at 5 MB with one backup each. The viewer shows recent rows; CSV export includes all retained monitor/event rows. Retention depends on file size, not days. Preferences store palette, window mode and position. These files, test output, exports and local audit records are excluded from Git by a reviewed-file allowlist in `.gitignore`.
+M1 adds an **observation-only** diagnostic worker (default 60 seconds) and a read-only diagnostics tab under the settings icon. Physical/commit memory, OS low-memory notification, CPU, paging/disk counters, major process snapshots and observer load are recorded with units and missing-data status. These values do **not** change automatic cleanup decisions. Exact hard-fault counts and interaction latency remain explicitly unmeasured. See the [M1 audit, schema, tests and limitations](docs/M1-DIAGNOSTICS.md) and [M2–M4 design](docs/M2-M4-PLAN.md).
+
+`data/diagnostics.jsonl` rotates at a strict 5 MiB plus one backup. Configure observation with `diagnostics.json`; disabling it does not disable the legacy monitor. The main state heartbeat is now written at most once per minute, while display/candidate sampling remains at five seconds. The snapshot is cached; diagnostic collection and its log I/O run on a separate worker. No performance improvement or sustained deployment is claimed by merely obtaining counters.
+
+When diagnostics are enabled in the resident UI, successful trims also schedule observation-only before/after/+30s/+120s records in `data/post-trim.jsonl` (strict 5 MiB + one backup, at most 12 pending attempts). Delayed stages reopen a read-only handle and revalidate identity; missed deadlines, exited/restarted targets and failed APIs are explicit missing observations. Working-set rebound and logical I/O deltas do not establish speed improvement. Paging/disk context is cached and age-labelled. Standalone monitor invocations without an observer do not schedule follow-ups. See [M3 observation schema, tests and limitations](docs/M3-OBSERVATION.md).
+
+Normal runtime files live in `data/`. Monitor/event JSONL logs rotate at 5 MB with one backup each. The viewer and CSV export include retained monitoring, event and post-trim rows, with reasons and signed before/after/rebound changes. Settings show the latest cached follow-up without new collection or file reads. The UI error log now rotates at 5 MiB plus one backup and replaces oversized messages with a short marker; an already oversized legacy error log refuses further appends until archived. Retention depends on size, not days. Preferences store palette, window mode and position. Test/profile data uses isolated directories. Runtime data, test output, exports and local audit records are excluded from Git by a reviewed-file allowlist.
 
 ## Tests
 
@@ -62,8 +69,16 @@ All runtime files live in `data/`. Monitor/event JSONL logs rotate at 5 MB with 
 # Engine, native disposable-process test, logs and off-screen UI tests:
 powershell.exe -NoProfile -File .\Test-All.ps1 -SkipInstalled
 
+# Optional ~120-second native follow-up check; trims only its disposable test host:
+powershell.exe -NoProfile -File .\Test-PostTrimRealtime.ps1
+
+# Optional isolated, hidden UI profile; no user applications can be trimmed:
+powershell.exe -NoProfile -File .\Test-UIProfile.ps1 -Seconds 60
+
 # Also check the installed task and live heartbeat:
 powershell.exe -NoProfile -File .\Test-All.ps1
 ```
 
-The tests exercise candidate filters, pressure/cooldown rules, graph calculations, manual button routing with synthetic data, native pin modes, theme persistence, log export and tray restoration. Actual native trimming tests touch only disposable test processes. Preview images use synthetic memory values.
+The tests exercise candidate filters, pressure/cooldown rules, graph calculations, manual button routing with synthetic data, native pin modes, theme persistence, log export and tray restoration. M1 adds injectable source/clock diagnostics tests and real read-only API checks. Actual native trimming tests touch only disposable test processes. Preview images use synthetic memory values.
+
+See [completion scope and verification boundaries](docs/COMPLETION.md). This review build is not a public release and does not establish improved Windows responsiveness.

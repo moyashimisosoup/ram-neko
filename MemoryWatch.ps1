@@ -58,13 +58,17 @@ function Get-MemorySnapshot {
     [pscustomobject]@{ AvailableMB = [math]::Round($m.available / 1MB); TotalMB = [math]::Round($m.total / 1MB) }
 }
 
+function New-TrimForegroundGuard([string]$Name) {
+    [Action]({if((Get-ForegroundProcess).ProcessName -eq $Name){throw 'foreground_changed_before_trim'}}.GetNewClosure())
+}
+
 function Invoke-WorkingSetTrim([RamNeko.Safety.CandidateIdentity]$Identity,[switch]$Observe) {
     if ($null -eq $Identity -or $Identity.Name -notin $script:trimPolicy.AllowedNames -or
         $Identity.SessionId -ne (Get-Process -Id $PID).SessionId) { throw 'identity_not_allowed' }
     if($Observe){
         $native=New-Object RamNeko.Safety.WindowsTrimNative
         # Baseline probes add work after the outer focus check. Recheck on this same UI/action thread.
-        $native.BeforeEmpty=[Action]{if((Get-ForegroundProcess).ProcessName -eq $Identity.Name){throw 'foreground_changed_before_trim'}}
+        $native.BeforeEmpty=New-TrimForegroundGuard $Identity.Name
         [RamNeko.Safety.TrimGuard]::ExecuteObserved($Identity,$native)
     }
     else{[RamNeko.Safety.TrimGuard]::Execute($Identity, (New-Object RamNeko.Safety.WindowsTrimNative))}
@@ -161,6 +165,7 @@ function Invoke-MemoryWatch([switch]$Manual, [string]$ProtectedName = '', $Diagn
         $memory = Get-MemorySnapshot
         $decision = Get-MemoryDecision $memory.AvailableMB $memory.TotalMB $state.LowSamples $state.LastActionUtc $now
         $entry = [ordered]@{ Utc = $now.ToString('o'); AvailableMB = $memory.AvailableMB; TotalMB = $memory.TotalMB; LowSamples = $decision.LowSamples; Action = 'observe'; Results = @() }
+        $entry.DecisionReason=if($ObserveOnly){'observation_only'}elseif($Manual){'manual_requested'}elseif($decision.Trim){'confirmed_pressure'}elseif($decision.LowSamples -eq 0){'no_pressure'}elseif($decision.LowSamples -lt 3){'waiting_pressure_confirmation'}else{'automatic_cooldown'}
         if($null -ne $DiagnosticsReference){$entry.LogSchemaVersion=2;$entry.Diagnostics=$DiagnosticsReference}
         $state.LowSamples = $decision.LowSamples
         $state.LastSampleUtc = $now.ToString('o')
@@ -172,11 +177,16 @@ function Invoke-MemoryWatch([switch]$Manual, [string]$ProtectedName = '', $Diagn
             Move-Item -LiteralPath "$statePath.tmp" -Destination $statePath -Force
             $foreground = Get-ForegroundProcess
             $entry.Action = if ($Manual) { 'manual_trim' } else { 'trim_attempt' }
-            foreach ($process in @(Get-TrimCandidates $foreground.ProcessName $foreground.Id $ProtectedName)) {
+            $targets=@(Get-TrimCandidates $foreground.ProcessName $foreground.Id $ProtectedName)
+            if($targets.Count -eq 0){$entry.DecisionReason='no_eligible_candidates'}
+            foreach ($process in $targets) {
                 if (-not $Manual -and (Get-MemorySnapshot).AvailableMB -ge 2048) { break }
                 # Recheck focus immediately before touching a process.
                 $current = Get-ForegroundProcess
-                if ($current.ProcessName -eq $process.ProcessName -or $process.ProcessName -eq $ProtectedName) { continue }
+                if ($current.ProcessName -eq $process.ProcessName -or $process.ProcessName -eq $ProtectedName) {
+                    $entry.Results+=@{Id=$process.Id;Name=$process.ProcessName;Status='skipped';Reason='foreground_protected'}
+                    continue
+                }
                 $result = [ordered]@{ Id = $process.Id; Name = $process.ProcessName; BeforeMB = [math]::Round($process.WorkingSet64 / 1MB); Status = 'ok' }
                 try {
                     $result.SelectedStartUtcTicks = $process.TrimIdentity.StartUtcTicks

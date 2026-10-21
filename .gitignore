@@ -20,6 +20,8 @@
 !/LaunchHidden.vbs
 !/policy.json
 !/Test-All.ps1
+!/Test-UIProfile.ps1
+!/docs/COMPLETION.md
 !/Test-MemoryWatch.ps1
 !/Test-GadgetSupport.ps1
 !/Diagnostics.ps1

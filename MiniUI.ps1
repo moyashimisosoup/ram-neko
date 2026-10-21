@@ -1,14 +1,17 @@
-﻿param([switch]$SmokeTest)
+﻿param([switch]$SmokeTest,[ValidateRange(0,300)][int]$ProfileSeconds=0)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms,System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 . "$PSScriptRoot\PixelTheme.ps1"
 $script:uiRoot = $PSScriptRoot
-. "$PSScriptRoot\MemoryWatch.ps1" -LibraryOnly
+$profileMode=$ProfileSeconds -gt 0
+if($profileMode -and ($SmokeTest -or $ProfileSeconds -lt 10)){throw 'Profile requires 10..300 seconds and cannot combine with SmokeTest'}
+. "$PSScriptRoot\MemoryWatch.ps1" -LibraryOnly -ObserveOnly:$profileMode
 . "$PSScriptRoot\GadgetSupport.ps1"
 if ($SmokeTest) { $DataDirectory = Join-Path $PSScriptRoot 'ui-smoke-data' }
+if($profileMode){$DataDirectory=Join-Path $PSScriptRoot ('profile-ui-data-'+[guid]::NewGuid().ToString('N'))}
 New-Item -ItemType Directory -Path $DataDirectory -Force | Out-Null
-$mutexName = if ($SmokeTest) { 'Local\MemoryWatch-MiniUI-Smoke' } else { 'Local\MemoryWatch-MiniUI' }
+$mutexName = if ($SmokeTest) { 'Local\MemoryWatch-MiniUI-Smoke' } elseif($profileMode){'Local\MemoryWatch-MiniUI-Profile-'+[guid]::NewGuid().ToString('N')} else { 'Local\MemoryWatch-MiniUI' }
 $mutex = New-Object Threading.Mutex($false, $mutexName)
 $ownsMutex = $false
 try { $ownsMutex = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
@@ -19,7 +22,7 @@ $script:protectedName = ''
 $script:lastMonitor = [datetime]::MinValue
 $script:lastResult = '候補を確認中（低CPU状態を60秒計測）'
 $script:chart = $null
-$script:preferences=if($SmokeTest){[pscustomobject]@{Palette='Lavender';WindowMode='Normal';X=$null;Y=$null}}else{Read-GadgetPreferences}
+$script:preferences=if($SmokeTest -or $profileMode){[pscustomobject]@{Palette='Lavender';WindowMode='Normal';X=$null;Y=$null}}else{Read-GadgetPreferences}
 $script:palette=$script:gadgetPalettes[$script:preferences.Palette]
 $script:restoringPreferences=$true
 $script:logForm=$null
@@ -30,6 +33,10 @@ $script:diagnosticsText=$null
 $script:diagnosticEngine=$null
 $script:postTrimEngine=$null
 $script:diagnosticSnapshot=$null
+$script:postTrimSummary=$null
+$script:lastPostTrimJson=$null
+$script:profileTimer=$null
+$script:profileResult=$null
 $script:lastDiagnosticJson=$null
 $script:lastHeartbeat=[datetime]::MinValue
 $script:heartbeatWrites=0
@@ -39,6 +46,7 @@ $form.ClientSize = New-Object Drawing.Size(328,328)
 $form.Font = New-Object Drawing.Font('MS Gothic',9)
 $form.FormBorderStyle = 'None'
 $form.ShowInTaskbar = $false
+if($profileMode){$form.Opacity=0}
 $form.MaximizeBox = $false
 $form.StartPosition = 'Manual'
 $area = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
@@ -180,7 +188,7 @@ $tooltip.SetToolTip($topButton,'他の通常ウインドウより前面に表示
 $tray = New-Object Windows.Forms.NotifyIcon
 $tray.Icon = $catIcon
 $tray.Text = 'RAM / NEKO'
-$tray.Visible = -not $SmokeTest
+$tray.Visible = -not ($SmokeTest -or $profileMode)
 $menu = New-Object Windows.Forms.ContextMenuStrip
 $menu.Font=$form.Font
 $menu.BackColor=$form.BackColor
@@ -275,13 +283,27 @@ function Update-DiagnosticsDisplay {
         if($script:diagnosticSnapshot){
             $s=$script:diagnosticSnapshot
             $lines=@("M1: 観測専用 / 整理判断には未使用", "UTC: $($s.Utc)", "収集時間: $($s.CollectionDurationMs) ms",'')
-            if($script:postTrimEngine){$lines+="整理後観測: 待機 $($script:postTrimEngine.Pending) / エラー $($script:postTrimEngine.LastError)"}
             foreach($property in $s.Metrics.PSObject.Properties){$m=$property.Value;$value=if($null -eq $m.Value){'欠測'}else{[string]$m.Value};$lines+="$($property.Name): $value $($m.Unit) [$($m.Status)] $($m.Reason)"}
-            $script:diagnosticsText.Text=$lines -join "`r`n"
-        }else{$script:diagnosticsText.Text='診断結果は準備中・無効・取得不可です。欠測値は0として扱いません。整理判断は従来どおりです。'}
+        }else{$lines=@('診断結果は準備中・無効・取得不可です。欠測値は0として扱いません。整理判断は従来どおりです。')}
+        if($script:postTrimEngine){$lines+="整理後観測: 待機 $($script:postTrimEngine.Pending) / エラー $($script:postTrimEngine.LastError)"}
+        if($script:postTrimSummary){$lines+='';$lines+='最新の整理後観測:';$lines+=$script:postTrimSummary}
+        $script:diagnosticsText.Text=$lines -join "`r`n"
     }
 }
+function Update-PostTrimCache {
+    if(-not $script:postTrimEngine){return}
+    try{
+        $json=$script:postTrimEngine.LatestJson
+        if($json -and $json -ne $script:lastPostTrimJson){
+            $row=$json|ConvertFrom-Json
+            $script:postTrimSummary=Format-PostTrimSummary $row
+            $script:lastPostTrimJson=$json
+            Update-DiagnosticsDisplay
+        }
+    }catch{$script:postTrimSummary='整理後観測: 取得不可（欠測）';Update-DiagnosticsDisplay}
+}
 function Update-DiagnosticsCache {
+    Update-PostTrimCache
     if(-not $script:diagnosticEngine){return}
     try{
     $json=$script:diagnosticEngine.LatestJson
@@ -366,10 +388,10 @@ function Update-MiniStatus([switch]$MonitorDue) {
         $script:lastHeartbeat=[datetime]::UtcNow;$script:heartbeatWrites++
         }
     } catch {
+        $failureMessage=$_.Exception.Message
         $cleanButton.Enabled = $false
-        $statusLabel.Text = '計測エラー: '+$_.Exception.Message
-        ([datetime]::UtcNow.ToString('o') + ' ' + $_.Exception.Message) | Add-Content -LiteralPath (Join-Path $DataDirectory 'ui-errors.log')
-        Write-GadgetEvent 'ui_error' $_.Exception.Message
+        $statusLabel.Text = '計測エラー: '+$failureMessage
+        try{Write-GadgetUiError $failureMessage;Write-GadgetEvent 'ui_error' $failureMessage}catch{$diagnosticLabel.Text='ログ: 書込み不可'}
     }
 }
 function Set-CleanupSummary($Entry) {
@@ -385,7 +407,7 @@ function Invoke-MiniCleanup {
     $cleanButton.Enabled = $false
     Write-GadgetEvent 'manual_requested'
     try {
-        if ($SmokeTest) { throw 'Smoke test cannot trim applications' }
+        if ($SmokeTest -or $profileMode) { throw 'Observation test cannot trim applications' }
         # Re-read focus tracking on the click, not only on the last display tick.
         $current = Get-ForegroundProcess
         if ($current.Id -ne $PID) { $script:protectedName = $current.ProcessName }
@@ -404,6 +426,37 @@ function Switch-MiniPause {
     $pauseButton.Latched=$script:paused
     Write-GadgetEvent 'automatic_pause' ([string]$script:paused)
     Update-MiniStatus
+}
+function Get-UiProfileSnapshot {
+    $native=New-Object RamNeko.Safety.WindowsTrimNative
+    $handle=$native.OpenReadOnly($PID)
+    try{$native.Observe($handle)}finally{$native.Close($handle)}
+}
+function Start-UiObservationProfile {
+    $script:profileBegin=Get-UiProfileSnapshot
+    $script:profileTimer=New-Object Windows.Forms.Timer
+    $script:profileTimer.Interval=$ProfileSeconds*1000
+    $script:profileTimer.Add_Tick({
+        $script:profileTimer.Stop()
+        try{
+            $end=Get-UiProfileSnapshot
+            $elapsed=$end.Seconds-$script:profileBegin.Seconds
+            $cpu=if($null -ne $end.SelfCpuSeconds -and $null -ne $script:profileBegin.SelfCpuSeconds){$end.SelfCpuSeconds-$script:profileBegin.SelfCpuSeconds}else{$null}
+            $entries=@(if(Test-Path (Join-Path $DataDirectory 'monitor.jsonl')){Get-Content (Join-Path $DataDirectory 'monitor.jsonl')|ForEach-Object{$_|ConvertFrom-Json}})
+            $script:profileResult=[ordered]@{
+                Mode='hidden_observation_only';ObservationOnly=[bool]$ObserveOnly;ElapsedSeconds=$elapsed;CpuSeconds=$cpu
+                NormalizedCpuPercent=if($null -ne $cpu){100*$cpu/$elapsed/[Environment]::ProcessorCount}else{$null}
+                StartWorkingSetBytes=$script:profileBegin.Bytes['self.working_set_bytes'];EndWorkingSetBytes=$end.Bytes['self.working_set_bytes']
+                LogicalReadBytes=$end.Bytes['self.logical_read_bytes_total']-$script:profileBegin.Bytes['self.logical_read_bytes_total']
+                LogicalWriteBytes=$end.Bytes['self.logical_write_bytes_total']-$script:profileBegin.Bytes['self.logical_write_bytes_total']
+                HeartbeatWrites=$script:heartbeatWrites;DiagnosticWrites=if($script:diagnosticEngine){$script:diagnosticEngine.LogWrites}else{0}
+                MonitorSamples=$entries.Count;CleanupAttempts=@($entries|Where-Object Action -in @('trim_attempt','manual_trim')).Count
+                DataDirectory=$DataDirectory
+            }
+        }catch{$script:profileResult=@{Error=$_.Exception.Message;ObservationOnly=[bool]$ObserveOnly;DataDirectory=$DataDirectory}}
+        finally{$script:exitRequested=$true;$form.Close()}
+    })
+    $script:profileTimer.Start()
 }
 $pauseButton.Add_Click({ Switch-MiniPause })
 $cleanButton.Add_Click({ Invoke-MiniCleanup })
@@ -478,6 +531,13 @@ try {
         $script:diagnosticSnapshot=[pscustomobject]@{Utc='2026-01-01T00:00:00Z';CollectionDurationMs=1;Metrics=[pscustomobject]@{sample=[pscustomobject]@{Value=$null;Unit='bytes';Status='unavailable';Reason='test'}}}
         Update-DiagnosticsDisplay
         if($script:diagnosticsText.Text -notlike '*欠測*'){throw 'Diagnostics missing-value display failed'}
+        $postFixture=@{Schema='ram-neko.post-trim';Version=1;Utc='2026-01-01T00:00:30Z';Phase='30s';Status='ok';Reason=$null;ActualElapsedSeconds=30;Changes=@{'target.working_set_delta_from_before_bytes'=-150MB;'target.working_set_rebound_from_after_bytes'=50MB}}
+        $script:postTrimEngine=[pscustomobject]@{LatestJson=($postFixture|ConvertTo-Json -Depth 8 -Compress);Pending=0;LastError=$null}
+        Update-PostTrimCache
+        if($script:diagnosticsText.Text -notlike '*+50.0 MB*' -or $script:diagnosticsText.Text -notlike '*未判定*'){throw 'Post-trim diagnostic display failed'}
+        $script:postTrimEngine.LatestJson='invalid';Update-PostTrimCache
+        if($script:diagnosticsText.Text -notlike '*取得不可*'){throw 'Post-trim invalid cache isolation failed'}
+        $script:postTrimEngine=$null;$script:postTrimSummary=$null;$script:lastPostTrimJson=$null
         $script:diagnosticSnapshot=$null
         $script:settingsPalette.SelectedIndex=1
         if($script:preferences.Palette -ne 'Mint' -or $form.BackColor.ToArgb() -ne [Drawing.ColorTranslator]::FromHtml($script:gadgetPalettes.Mint.Body).ToArgb()){throw 'Palette selection failed'}
@@ -495,6 +555,15 @@ try {
         try{$script:settingsForm.DrawToBitmap($settingsImage,(New-Object Drawing.Rectangle(0,0,$script:settingsForm.Width,$script:settingsForm.Height)));$settingsImage.Save((Join-Path $PSScriptRoot 'settings-preview.png'))}finally{$settingsImage.Dispose()}
         $script:settingsForm.Hide()
         if($script:heartbeatWrites -ne 1){throw 'Heartbeat was not throttled'}
+        $previousData=$DataDirectory;$previousHeartbeat=$script:lastHeartbeat
+        $blockedPath=Join-Path $DataDirectory 'write-blocked'
+        'x'|Set-Content -LiteralPath $blockedPath
+        try{
+            $DataDirectory=$blockedPath;$script:lastHeartbeat=[datetime]::MinValue
+            Update-MiniStatus
+            if($cleanButton.Enabled -or $diagnosticLabel.Text -notlike '*書込み不可*'){throw 'UI write failure was not isolated'}
+        }finally{$DataDirectory=$previousData;$script:lastHeartbeat=$previousHeartbeat;Remove-Item -LiteralPath $blockedPath}
+        Update-MiniStatus
         $script:diagnosticEngine=[pscustomobject]@{LatestJson='invalid-json';LastError=$null}
         Update-DiagnosticsCache
         if($script:diagnosticSnapshot){throw 'Invalid diagnostics escaped isolation'}
@@ -508,6 +577,7 @@ try {
         Write-Output 'PASS: pixel cat artwork, custom hide/close-to-tray, restore menu, no taskbar button'
         Write-Output 'PASS: native topmost and desktop mode exclusivity, pin release, palette persistence, log viewer and CSV export'
         Write-Output 'PASS: pixel settings icon, palette in settings dialog, heartbeat write throttling'
+        Write-Output 'PASS: post-trim cache display, missing-data isolation, and UI write failure protection'
     } else {
         try{
             $config=Get-DiagnosticsConfiguration
@@ -522,13 +592,18 @@ try {
         }catch{Write-GadgetEvent 'diagnostics_unavailable' $_.Exception.Message;$diagnosticLabel.Text='診断: 取得不可'}
         $hook = [MemoryWatchNative]::StartForegroundTracking($PID)
         if ($hook -eq [IntPtr]::Zero) { throw 'Foreground tracking unavailable' }
-        $form.Add_Shown({ Apply-GadgetWindowMode $script:preferences.WindowMode;Update-MiniStatus -MonitorDue; $timer.Start() })
+        $form.Add_Shown({
+            if($profileMode){$form.Hide()}
+            Apply-GadgetWindowMode $script:preferences.WindowMode;Update-MiniStatus -MonitorDue;$timer.Start()
+            if($profileMode){Start-UiObservationProfile}
+        })
         [Windows.Forms.Application]::Run($form)
     }
 } finally {
+    if($script:profileTimer){$script:profileTimer.Stop();$script:profileTimer.Dispose()}
     if($script:postTrimEngine){$script:postTrimEngine.Dispose();[void]$script:postTrimEngine.WaitForStop(1000)}
     if($script:diagnosticEngine){$script:diagnosticEngine.Dispose()}
-    Write-GadgetEvent 'exited'
+    try{Write-GadgetEvent 'exited'}catch{} # Always release native/UI resources even when logging fails.
     if($script:logForm -and -not $script:logForm.IsDisposed){$script:logForm.Dispose()}
     if($script:settingsForm -and -not $script:settingsForm.IsDisposed){$script:settingsForm.Dispose()}
     if ($hook -ne [IntPtr]::Zero) { [void][MemoryWatchNative]::UnhookWinEvent($hook) }
@@ -539,3 +614,4 @@ try {
     if ($ownsMutex) { $mutex.ReleaseMutex() }
     $mutex.Dispose()
 }
+if($profileMode){$script:profileResult|ConvertTo-Json -Depth 6}

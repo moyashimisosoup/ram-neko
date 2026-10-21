@@ -90,6 +90,8 @@ try{
         $deadline=[datetime]::UtcNow.AddSeconds(5)
         while($engine.LogWrites -lt 2 -and [datetime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 25}
         Assert ($engine.LogWrites -eq 2 -and $engine.WorkerAlive -and $h.Source.Reads -eq 0) 'idle worker writes baselines then waits without polling target processes'
+        $cached=$engine.LatestJson;1..10|ForEach-Object{$engine.LatestJson|Out-Null}
+        Assert ($cached -and $engine.LatestJson -eq $cached -and $engine.LogWrites -eq 2) 'post-trim UI cache reads never recollect targets or rewrite logs'
     }finally{$engine.Dispose();Assert ($engine.WaitForStop(5000)) 'worker shuts down without waiting for delayed deadlines'}
     $rows=@(Get-Content (Join-Path $directory 'post-trim.jsonl')|ForEach-Object{$_|ConvertFrom-Json})
     Assert ($rows.Count -eq 4 -and $rows[3].Reason -eq 'observer_stopped') 'shutdown cancellations are flushed by the test worker'
@@ -120,7 +122,7 @@ try{
     try{
         [void]$engine.Enqueue($h.Receipt());$deadline=[datetime]::UtcNow.AddSeconds(5)
         while(-not $engine.LastError -and [datetime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 25}
-        Assert ($engine.LastError -like 'post_trim_log_io:*' -and $engine.WorkerAlive) 'real log I/O failure is exposed without killing the observation worker'
+        Assert ($engine.LastError -like 'post_trim_log_io:*' -and $engine.WorkerAlive -and $engine.LatestJson) 'real log I/O failure is exposed while preserving the latest UI observation'
     }finally{$engine.Dispose();[void]$engine.WaitForStop(5000);Remove-Item -LiteralPath $blockedPath}
 }finally{
     foreach($name in @('post-trim.jsonl','post-trim.jsonl.1','rotation.jsonl','rotation.jsonl.1','diagnostics.jsonl','diagnostics.jsonl.1')){Remove-Item -LiteralPath (Join-Path $directory $name) -ErrorAction SilentlyContinue}

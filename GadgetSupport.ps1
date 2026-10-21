@@ -29,11 +29,28 @@ function Write-GadgetEvent([string]$Action,[string]$Detail='') {
     @{Utc=[datetime]::UtcNow.ToString('o');Action=$Action;Detail=$Detail} | ConvertTo-Json -Compress |
         Add-Content -LiteralPath $path -Encoding UTF8
 }
+function Write-GadgetUiError([string]$Message,[long]$Limit=5242880) {
+    $path=Join-Path $DataDirectory 'ui-errors.log'
+    $encoding=New-Object Text.UTF8Encoding($false)
+    $line=[datetime]::UtcNow.ToString('o')+' '+$Message+[Environment]::NewLine
+    if((Test-Path -LiteralPath $path) -and (Get-Item -LiteralPath $path).Length -gt $Limit){throw 'Legacy UI error log exceeds capacity; archive it before resuming this log'}
+    if($encoding.GetByteCount($line) -gt $Limit){$line=[datetime]::UtcNow.ToString('o')+' error_message_exceeds_log_capacity'+[Environment]::NewLine}
+    if($encoding.GetByteCount($line) -gt $Limit){throw 'UI error log limit too small'}
+    if((Test-Path -LiteralPath $path) -and ((Get-Item -LiteralPath $path).Length+$encoding.GetByteCount($line)) -gt $Limit){Move-Item -LiteralPath $path -Destination "$path.1" -Force}
+    [IO.File]::AppendAllText($path,$line,$encoding)
+}
+function Format-PostTrimSummary($Row) {
+    if($Row.Schema -ne 'ram-neko.post-trim' -or $Row.Version -ne 1 -or $Row.Phase -notin @('before','after','30s','120s')){throw 'Invalid post-trim record'}
+    $change=if($null -eq $Row.Changes.'target.working_set_delta_from_before_bytes'){'欠測'}else{('{0:+0.0;-0.0;0.0} MB' -f ([double]$Row.Changes.'target.working_set_delta_from_before_bytes'/1MB))}
+    $rebound=if($null -eq $Row.Changes.'target.working_set_rebound_from_after_bytes'){'欠測'}else{('{0:+0.0;-0.0;0.0} MB' -f ([double]$Row.Changes.'target.working_set_rebound_from_after_bytes'/1MB))}
+    $target=if($Row.PSObject.Properties['Identity'] -and $Row.Identity){"$($Row.Identity.Name) PID $($Row.Identity.Id)"}else{'対象不明'}
+    "$target / $($Row.Phase) [$($Row.Status)] $($Row.Reason) / WS差 $change / 再増加 $rebound / $([math]::Round([double]$Row.ActualElapsedSeconds,1)) 秒 / 性能改善は未判定"
+}
 function Get-GadgetLogRows([int]$Tail=300) {
-    foreach($name in @('monitor.jsonl.1','monitor.jsonl','events.jsonl.1','events.jsonl')){
+    foreach($name in @('monitor.jsonl.1','monitor.jsonl','events.jsonl.1','events.jsonl','post-trim.jsonl.1','post-trim.jsonl')){
         $path=Join-Path $DataDirectory $name
         if(-not (Test-Path -LiteralPath $path)){continue}
-        $content=if($Tail -gt 0){Get-Content -LiteralPath $path -Tail $Tail}else{Get-Content -LiteralPath $path}
+        $content=if($Tail -gt 0){Get-Content -LiteralPath $path -Tail $Tail -Encoding UTF8}else{Get-Content -LiteralPath $path -Encoding UTF8}
         foreach($line in @($content)){
             try {
                 $row=$line|ConvertFrom-Json
@@ -43,7 +60,13 @@ function Get-GadgetLogRows([int]$Tail=300) {
                 if($row.PSObject.Properties['Detail']){$detail=$row.Detail}
                 if($row.PSObject.Properties['Error']){$detail=$row.Error}
                 if($row.PSObject.Properties['Results']){$detail=(@($row.Results|ForEach-Object{"$($_.Name): $($_.Status)"}) -join '; ')}
-                [pscustomobject]@{Utc=$row.Utc;Action=$row.Action;AvailableMB=$available;UsedPercent=$used;Detail=$detail}
+                if($row.PSObject.Properties['DecisionReason']){$detail="$($row.DecisionReason) $detail"}
+                $action=if($row.PSObject.Properties['Schema'] -and $row.Schema -eq 'ram-neko.post-trim'){
+                    $detail=Format-PostTrimSummary $row
+                    if($row.Snapshot -and $null -ne $row.Snapshot.Bytes.'physical.available_bytes'){$available=[math]::Round($row.Snapshot.Bytes.'physical.available_bytes'/1MB)}
+                    'post_trim/'+$row.Phase
+                }else{$row.Action}
+                [pscustomobject]@{Utc=$row.Utc;Action=$action;AvailableMB=$available;UsedPercent=$used;Detail=$detail}
             } catch {
                 [pscustomobject]@{Utc='';Action='unreadable_row';AvailableMB='';UsedPercent='';Detail='Malformed log row skipped'}
             }

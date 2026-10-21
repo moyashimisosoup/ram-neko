@@ -61,7 +61,7 @@ M1 adds an **observation-only** diagnostic worker (default 60 seconds) and a rea
 
 When diagnostics are enabled in the resident UI, successful trims also schedule observation-only before/after/+30s/+120s records in `data/post-trim.jsonl` (strict 5 MiB + one backup, at most 12 pending attempts). Delayed stages reopen a read-only handle and revalidate identity; missed deadlines, exited/restarted targets and failed APIs are explicit missing observations. Working-set rebound and logical I/O deltas do not establish speed improvement. Paging/disk context is cached and age-labelled. Standalone monitor invocations without an observer do not schedule follow-ups. See [M3 observation schema, tests and limitations](docs/M3-OBSERVATION.md).
 
-All runtime files live in `data/`. Monitor/event JSONL logs rotate at 5 MB with one backup each. The viewer shows recent rows; CSV export includes all retained monitor/event rows. Retention depends on file size, not days. Preferences store palette, window mode and position. These files, test output, exports and local audit records are excluded from Git by a reviewed-file allowlist in `.gitignore`.
+Normal runtime files live in `data/`. Monitor/event JSONL logs rotate at 5 MB with one backup each. The viewer and CSV export include retained monitoring, event and post-trim rows, with reasons and signed before/after/rebound changes. Settings show the latest cached follow-up without new collection or file reads. The UI error log now rotates at 5 MiB plus one backup and replaces oversized messages with a short marker; an already oversized legacy error log refuses further appends until archived. Retention depends on size, not days. Preferences store palette, window mode and position. Test/profile data uses isolated directories. Runtime data, test output, exports and local audit records are excluded from Git by a reviewed-file allowlist.
 
 ## Tests
 
@@ -72,8 +72,13 @@ powershell.exe -NoProfile -File .\Test-All.ps1 -SkipInstalled
 # Optional ~120-second native follow-up check; trims only its disposable test host:
 powershell.exe -NoProfile -File .\Test-PostTrimRealtime.ps1
 
+# Optional isolated, hidden UI profile; no user applications can be trimmed:
+powershell.exe -NoProfile -File .\Test-UIProfile.ps1 -Seconds 60
+
 # Also check the installed task and live heartbeat:
 powershell.exe -NoProfile -File .\Test-All.ps1
 ```
 
 The tests exercise candidate filters, pressure/cooldown rules, graph calculations, manual button routing with synthetic data, native pin modes, theme persistence, log export and tray restoration. M1 adds injectable source/clock diagnostics tests and real read-only API checks. Actual native trimming tests touch only disposable test processes. Preview images use synthetic memory values.
+
+See [completion scope and verification boundaries](docs/COMPLETION.md). This review build is not a public release and does not establish improved Windows responsiveness.

@@ -93,6 +93,7 @@ $s|ConvertTo-Json|Set-Content -LiteralPath $path -Encoding UTF8
 $observed=Invoke-MemoryWatch -DiagnosticsReference @{Schema='ram-neko.diagnostics';Version=1;ObservationOnly=$true;OsLow=$true;CommitPercent=100}|ConvertFrom-Json
 Assert ($observed.Action -eq 'observe' -and $script:trimCalls -eq 2) 'new diagnostic pressure values cannot trigger cleanup'
 Assert ($observed.LogSchemaVersion -eq 2 -and $observed.Diagnostics.ObservationOnly) 'optional versioned diagnostics reference preserves legacy log fields'
+Assert ($observed.DecisionReason -eq 'no_pressure') 'observation explains why legacy pressure conditions did not authorize cleanup'
 $s.LastActionUtc=[datetime]::UtcNow.AddMinutes(-2).ToString('o')
 $s|ConvertTo-Json|Set-Content -LiteralPath $path -Encoding UTF8
 function Invoke-WorkingSetTrim($Identity) { throw 'identity_mismatch' }
@@ -111,6 +112,11 @@ $observedAttempt=Invoke-MemoryWatch -Manual -EvaluationObserver $observer|Conver
 Assert ($observedAttempt.Results[0].Status -eq 'ok' -and $observedAttempt.Results[0].ObservationScheduling -eq 'observation_unavailable' -and $observer.Calls -eq 1) 'observation scheduling failure cannot turn a successful trim into a retry or bypass cooldown'
 $blocked=$false;try{Invoke-MemoryWatch -Manual -EvaluationObserver $observer|Out-Null}catch{$blocked=$true}
 Assert ($blocked -and $observer.Calls -eq 1) 'manual cooldown remains enforced when observation scheduling failed'
+$ObserveOnly=$true
+$s.LastActionUtc=[datetime]::UtcNow.AddMinutes(-2).ToString('o');$s|ConvertTo-Json|Set-Content -LiteralPath $path -Encoding UTF8
+function Get-TrimCandidates {throw 'Observation-only mode must never select control targets'}
+$observing=Invoke-MemoryWatch -Manual|ConvertFrom-Json
+Assert ($observing.Action -eq 'observe' -and $observing.DecisionReason -eq 'observation_only') 'observation-only mode cannot select or trim targets even for a manual request'
 # Only known test artifacts; never recursively delete a computed directory.
 'state.json','monitor.jsonl','monitor.lock' | ForEach-Object { Remove-Item -LiteralPath (Join-Path $DataDirectory $_) }
 Remove-Item -LiteralPath $DataDirectory

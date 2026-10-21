@@ -80,6 +80,13 @@ try {
     $actual = $native.ReadIdentity($handle)
     Assert ($actual.Id -eq $self.Id -and $actual.StartUtcTicks -eq $self.StartTime.ToUniversalTime().Ticks -and $actual.Name -eq $self.ProcessName -and $actual.SessionId -eq $self.SessionId) 'native same-handle creation time image and token session match owned process'
 } finally { $native.Close($handle); $self.Dispose() }
+$script:focusName='chrome'
+function Get-ForegroundProcess {[pscustomobject]@{ProcessName=$script:focusName}}
+$guard=New-TrimForegroundGuard 'chrome'
+$blocked=$false;try{$guard.Invoke()}catch{$blocked=$_.Exception.ToString() -match 'foreground_changed_before_trim'}
+Assert $blocked 'foreground delegate retains the selected browser name after its factory returns'
+$script:focusName='explorer';$guard.Invoke()
+Assert $true 'foreground delegate permits a different active family without losing captured identity'
 # Candidate collection is mocked too: no browser state or browser mutation.
 $session = (Get-Process -Id $PID).SessionId
 $start = [datetime]::UtcNow.AddMinutes(-10)

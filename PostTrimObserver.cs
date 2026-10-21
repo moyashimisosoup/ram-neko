@@ -147,8 +147,9 @@ namespace RamNeko.Safety {
     }
     public sealed class PostTrimEngine : IDisposable {
         readonly object gate=new object();readonly AutoResetEvent wake=new AutoResetEvent(false);readonly Thread worker;
-        readonly PostTrimScheduler scheduler;readonly string directory;bool disposed,exited;string error;long writes;
+        readonly PostTrimScheduler scheduler;readonly string directory;bool disposed,exited;string error,latest;long writes;
         public string LastError {get{lock(gate)return error;}}
+        public string LatestJson {get{lock(gate)return latest;}}
         public int Pending {get{return scheduler.Pending;}}
         public bool WorkerAlive {get{return worker.IsAlive;}}
         public long LogWrites {get{return Interlocked.Read(ref writes);}}
@@ -165,7 +166,8 @@ namespace RamNeko.Safety {
             File.AppendAllText(path,line,encoding);
         }
         void Write(ObservationRecord record) {
-            try {AppendBounded(Path.Combine(directory,"post-trim.jsonl"),new JavaScriptSerializer().Serialize(record));Interlocked.Increment(ref writes);}
+            try {string json=new JavaScriptSerializer().Serialize(record);lock(gate)latest=json;
+                AppendBounded(Path.Combine(directory,"post-trim.jsonl"),json);Interlocked.Increment(ref writes);}
             catch(Exception ex){lock(gate)error="post_trim_log_io: "+ex.GetType().Name;throw;}
         }
         void Run() {

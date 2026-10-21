@@ -86,6 +86,12 @@ Assert ($script:trimCalls -eq 2 -and $manual.Action -eq 'manual_trim') 'manual c
 $blocked=$false
 try { Invoke-MemoryWatch -Manual | Out-Null } catch { $blocked=$true }
 Assert ($blocked -and $script:trimCalls -eq 2) 'manual cleanup retains sixty-second debounce'
+$s=Get-Content -LiteralPath $path -Raw|ConvertFrom-Json
+$s.LastSampleUtc=[datetime]::UtcNow.AddSeconds(-60).ToString('o')
+$s|ConvertTo-Json|Set-Content -LiteralPath $path -Encoding UTF8
+$observed=Invoke-MemoryWatch -DiagnosticsReference @{Schema='ram-neko.diagnostics';Version=1;ObservationOnly=$true;OsLow=$true;CommitPercent=100}|ConvertFrom-Json
+Assert ($observed.Action -eq 'observe' -and $script:trimCalls -eq 2) 'new diagnostic pressure values cannot trigger cleanup'
+Assert ($observed.LogSchemaVersion -eq 2 -and $observed.Diagnostics.ObservationOnly) 'optional versioned diagnostics reference preserves legacy log fields'
 # Only known test artifacts; never recursively delete a computed directory.
 'state.json','monitor.jsonl','monitor.lock' | ForEach-Object { Remove-Item -LiteralPath (Join-Path $DataDirectory $_) }
 Remove-Item -LiteralPath $DataDirectory

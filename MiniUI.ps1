@@ -23,6 +23,15 @@ $script:preferences=if($SmokeTest){[pscustomobject]@{Palette='Lavender';WindowMo
 $script:palette=$script:gadgetPalettes[$script:preferences.Palette]
 $script:restoringPreferences=$true
 $script:logForm=$null
+$script:settingsForm=$null
+$script:settingsPalette=$null
+$script:settingsAppearance=$null
+$script:diagnosticsText=$null
+$script:diagnosticEngine=$null
+$script:diagnosticSnapshot=$null
+$script:lastDiagnosticJson=$null
+$script:lastHeartbeat=[datetime]::MinValue
+$script:heartbeatWrites=0
 $form = New-Object NekoGadgetForm
 $form.Text = 'RAM'
 $form.ClientSize = New-Object Drawing.Size(328,328)
@@ -146,17 +155,18 @@ $topButton.Text='前面に固定'
 $topButton.Location=New-Object Drawing.Point(166,248)
 $topButton.Size=New-Object Drawing.Size(148,29)
 $form.Controls.Add($topButton)
-$colorLabel=New-Object Windows.Forms.Label
-$colorLabel.Text='配色'
-$colorLabel.Location=New-Object Drawing.Point(12,292)
-$colorLabel.Size=New-Object Drawing.Size(36,18)
-$form.Controls.Add($colorLabel)
-$colorPicker=New-Object Windows.Forms.ComboBox
-$colorPicker.DropDownStyle='DropDownList'
-$colorPicker.Location=New-Object Drawing.Point(50,288)
-$colorPicker.Size=New-Object Drawing.Size(177,24)
-foreach($key in $script:gadgetPalettes.Keys){[void]$colorPicker.Items.Add($script:gadgetPalettes[$key].Name)}
-$form.Controls.Add($colorPicker)
+$settingsButton=New-Object NekoGadgetButton
+$settingsButton.Text='設定'
+$settingsButton.Location=New-Object Drawing.Point(12,285)
+$settingsButton.Size=New-Object Drawing.Size(96,29)
+$settingsBitmap=New-SettingsBitmap
+$settingsButton.Image=$settingsBitmap
+$form.Controls.Add($settingsButton)
+$diagnosticLabel=New-Object Windows.Forms.Label
+$diagnosticLabel.Text='診断: 準備中'
+$diagnosticLabel.Location=New-Object Drawing.Point(118,293)
+$diagnosticLabel.Size=New-Object Drawing.Size(116,18)
+$form.Controls.Add($diagnosticLabel)
 $logsButton=New-Object NekoGadgetButton
 $logsButton.Text='ログ'
 $logsButton.Location=New-Object Drawing.Point(238,285)
@@ -202,7 +212,12 @@ function Apply-GadgetPalette([string]$Key) {
     $candidateBar.BackColor=[Drawing.ColorTranslator]::FromHtml($script:palette.Candidate)
     foreach($bar in @($usageBar,$candidateBar)){$bar.Parent.BackColor=[Drawing.ColorTranslator]::FromHtml($script:palette.Track);$bar.Invalidate()}
     $menu.BackColor=$form.BackColor;$menu.ForeColor=$form.ForeColor
-    $colorPicker.BackColor=[Drawing.ColorTranslator]::FromHtml($script:palette.Face);$colorPicker.ForeColor=$form.ForeColor
+    if($script:settingsForm -and -not $script:settingsForm.IsDisposed){
+        $script:settingsForm.BackColor=$form.BackColor;$script:settingsForm.ForeColor=$form.ForeColor
+        $script:settingsPalette.BackColor=[Drawing.ColorTranslator]::FromHtml($script:palette.Face);$script:settingsPalette.ForeColor=$form.ForeColor
+        $script:settingsAppearance.BackColor=$form.BackColor;$script:settingsAppearance.ForeColor=$form.ForeColor
+        $script:diagnosticsText.BackColor=[Drawing.ColorTranslator]::FromHtml($script:palette.Face);$script:diagnosticsText.ForeColor=$form.ForeColor
+    }
     $form.Invalidate($true)
     if(-not $script:restoringPreferences){Write-GadgetEvent 'palette_changed' $Key;Save-GadgetSettings}
 }
@@ -217,11 +232,68 @@ function Apply-GadgetWindowMode([string]$Mode) {
 }
 function Show-GadgetPanel {
     $form.Show()
+    Update-MiniStatus
     Apply-GadgetWindowMode $script:preferences.WindowMode
     if($script:preferences.WindowMode -ne 'Desktop'){$form.Activate()}
     Write-GadgetEvent 'panel_shown'
 }
 function Hide-GadgetPanel { Save-GadgetSettings; $form.Hide(); Write-GadgetEvent 'panel_hidden' }
+function Show-GadgetSettings {
+    if($script:settingsForm -and -not $script:settingsForm.IsDisposed){$script:settingsForm.Activate();return}
+    $script:settingsForm=New-Object Windows.Forms.Form
+    $script:settingsForm.Text='RAM / NEKO - 設定'
+    $script:settingsForm.ClientSize=New-Object Drawing.Size(450,300)
+    $script:settingsForm.Font=$form.Font;$script:settingsForm.BackColor=$form.BackColor;$script:settingsForm.ForeColor=$form.ForeColor
+    $script:settingsForm.TopMost=$form.TopMost
+    $tabs=New-Object Windows.Forms.TabControl
+    $tabs.Dock='Fill'
+    $appearance=New-Object Windows.Forms.TabPage
+    $appearance.Text='配色'
+    $appearance.BackColor=$form.BackColor
+    $script:settingsAppearance=$appearance
+    $label=New-Object Windows.Forms.Label
+    $label.Text='配色（選択すると保存されます）';$label.Location=New-Object Drawing.Point(16,20);$label.Size=New-Object Drawing.Size(380,20)
+    $script:settingsPalette=New-Object Windows.Forms.ComboBox
+    $script:settingsPalette.DropDownStyle='DropDownList';$script:settingsPalette.Location=New-Object Drawing.Point(16,50);$script:settingsPalette.Width=240
+    foreach($key in $script:gadgetPalettes.Keys){[void]$script:settingsPalette.Items.Add($script:gadgetPalettes[$key].Name)}
+    $script:settingsPalette.SelectedIndex=@($script:gadgetPalettes.Keys).IndexOf($script:preferences.Palette)
+    $script:settingsPalette.Add_SelectedIndexChanged({Apply-GadgetPalette @($script:gadgetPalettes.Keys)[$script:settingsPalette.SelectedIndex]})
+    $appearance.Controls.Add($label);$appearance.Controls.Add($script:settingsPalette)
+    $diagnostics=New-Object Windows.Forms.TabPage
+    $diagnostics.Text='診断（観測専用）'
+    $script:diagnosticsText=New-Object Windows.Forms.TextBox
+    $script:diagnosticsText.Multiline=$true;$script:diagnosticsText.ReadOnly=$true;$script:diagnosticsText.WordWrap=$false;$script:diagnosticsText.ScrollBars='Both';$script:diagnosticsText.Dock='Fill'
+    $diagnostics.Controls.Add($script:diagnosticsText)
+    $tabs.TabPages.Add($appearance);$tabs.TabPages.Add($diagnostics);$script:settingsForm.Controls.Add($tabs)
+    Update-DiagnosticsDisplay
+    if($SmokeTest){$script:settingsForm.StartPosition='Manual';$script:settingsForm.Location=New-Object Drawing.Point(-32000,-32000);$script:settingsForm.ShowInTaskbar=$false}
+    $script:settingsForm.Show();Write-GadgetEvent 'settings_opened'
+}
+function Update-DiagnosticsDisplay {
+    if($script:diagnosticsText -and -not $script:diagnosticsText.IsDisposed){
+        if($script:diagnosticSnapshot){
+            $s=$script:diagnosticSnapshot
+            $lines=@("M1: 観測専用 / 整理判断には未使用", "UTC: $($s.Utc)", "収集時間: $($s.CollectionDurationMs) ms",'')
+            foreach($property in $s.Metrics.PSObject.Properties){$m=$property.Value;$value=if($null -eq $m.Value){'欠測'}else{[string]$m.Value};$lines+="$($property.Name): $value $($m.Unit) [$($m.Status)] $($m.Reason)"}
+            $script:diagnosticsText.Text=$lines -join "`r`n"
+        }else{$script:diagnosticsText.Text='診断結果は準備中・無効・取得不可です。欠測値は0として扱いません。整理判断は従来どおりです。'}
+    }
+}
+function Update-DiagnosticsCache {
+    if(-not $script:diagnosticEngine){return}
+    try{
+    $json=$script:diagnosticEngine.LatestJson
+    if($json -and $json -ne $script:lastDiagnosticJson){
+        $script:diagnosticSnapshot=$json|ConvertFrom-Json;$script:lastDiagnosticJson=$json
+        if($form.Visible){$diagnosticLabel.Text='診断: 観測専用'}
+        Update-DiagnosticsDisplay
+    }
+    if($script:diagnosticEngine.LastError -and $form.Visible){$diagnosticLabel.Text='診断: 一部欠測'}
+    }catch{
+        $script:diagnosticSnapshot=$null
+        if($form.Visible){$diagnosticLabel.Text='診断: 取得不可'}
+    }
+}
 function Show-GadgetLogs {
     if($script:logForm -and -not $script:logForm.IsDisposed){$script:logForm.Activate();return}
     $script:logForm=New-Object Windows.Forms.Form
@@ -254,6 +326,7 @@ function Show-GadgetLogs {
 
 function Update-MiniStatus([switch]$MonitorDue) {
     try {
+        Update-DiagnosticsCache
         $foreground = Get-ForegroundProcess
         if ($foreground.Id -ne $PID) { $script:protectedName = $foreground.ProcessName }
         elseif ([MemoryWatchNative]::LastExternalProcessId -ne 0) {
@@ -261,7 +334,8 @@ function Update-MiniStatus([switch]$MonitorDue) {
         }
         if (-not $script:protectedName) { throw 'Foreground unknown; cleanup disabled' }
         if ($MonitorDue -and -not $script:paused) {
-            $json = Invoke-MemoryWatch -ProtectedName $script:protectedName
+            $reference=if($script:diagnosticSnapshot){@{Schema=$script:diagnosticSnapshot.Schema;Version=1;Sequence=$script:diagnosticSnapshot.Sequence;Utc=$script:diagnosticSnapshot.Utc;ObservationOnly=$true}}else{$null}
+            $json = Invoke-MemoryWatch -ProtectedName $script:protectedName -DiagnosticsReference $reference
             $script:lastMonitor = [datetime]::UtcNow
             if ($json) {
                 $entry = $json | ConvertFrom-Json
@@ -272,6 +346,7 @@ function Update-MiniStatus([switch]$MonitorDue) {
         $candidates = @(Get-TrimCandidates $foreground.ProcessName $foreground.Id $script:protectedName)
         $script:chart = Get-MemoryChartData $memory $candidates
         $mode = if ($script:paused) { '自動整理停止中' } else { '監視中' }
+        if($form.Visible -or $SmokeTest){
         $label.Text = ('使用中 {0:N1}%   空き {1:N1} / {2:N1} GB' -f $script:chart.UsedPercent,($memory.AvailableMB/1024),($memory.TotalMB/1024))
         $candidateLabel.Text = ('整理候補 約{0:N1}%  {1:N0} MB / {2}件' -f $script:chart.CandidatePercent,$script:chart.CandidateMB,$script:chart.CandidateCount)
         $usageBar.Width = [int](300*$script:chart.UsedPercent/100)
@@ -279,11 +354,15 @@ function Update-MiniStatus([switch]$MonitorDue) {
         $cleanButton.Enabled = $candidates.Count -gt 0
         $statusLabel.Text = "$mode  " + (Get-Date -Format 'HH:mm:ss') + "`n" + $script:lastResult
         $label.ForeColor = if ($script:paused) { [Drawing.Color]::Gray } else { $form.ForeColor }
+        }
         $tray.Text = ('RAM free {0:N1} GB - {1}' -f ($memory.AvailableMB/1024),$mode)
+        if(([datetime]::UtcNow-$script:lastHeartbeat).TotalSeconds -ge 60){
         @{Pid=$PID; Utc=[datetime]::UtcNow.ToString('o'); Paused=$script:paused; AvailableMB=$memory.AvailableMB;
             IntervalSeconds=60; DisplayIntervalSeconds=5; Chart=$script:chart; ProtectedName=$script:protectedName;
             Theme='8bit-neko';TrayIcon='pixel-cat';TrayVisible=$tray.Visible;Palette=$script:preferences.Palette;WindowMode=$script:preferences.WindowMode} |
             ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $DataDirectory 'ui-status.json') -Encoding UTF8
+        $script:lastHeartbeat=[datetime]::UtcNow;$script:heartbeatWrites++
+        }
     } catch {
         $cleanButton.Enabled = $false
         $statusLabel.Text = '計測エラー: '+$_.Exception.Message
@@ -339,7 +418,7 @@ $tray.Add_DoubleClick({ Show-GadgetPanel })
 $desktopButton.Add_Click({$mode=if($script:preferences.WindowMode -eq 'Desktop'){'Normal'}else{'Desktop'};Apply-GadgetWindowMode $mode})
 $topButton.Add_Click({$mode=if($script:preferences.WindowMode -eq 'Topmost'){'Normal'}else{'Topmost'};Apply-GadgetWindowMode $mode})
 $logsButton.Add_Click({ Show-GadgetLogs })
-$colorPicker.Add_SelectedIndexChanged({if(-not $script:restoringPreferences){Apply-GadgetPalette @($script:gadgetPalettes.Keys)[$colorPicker.SelectedIndex]}})
+$settingsButton.Add_Click({Show-GadgetSettings})
 $exitItem.Add_Click({ $script:exitRequested = $true; $form.Close() })
 $form.Add_FormClosing({
     param($sender,$eventArgs)
@@ -351,7 +430,6 @@ $hook = [IntPtr]::Zero
 try {
     Initialize-MemoryNative
     Apply-GadgetPalette $script:preferences.Palette
-    $colorPicker.SelectedIndex=@($script:gadgetPalettes.Keys).IndexOf($script:preferences.Palette)
     Apply-GadgetWindowMode $script:preferences.WindowMode
     $script:restoringPreferences=$false
     Write-GadgetEvent 'started'
@@ -393,7 +471,13 @@ try {
         if(-not $form.DesktopPinned -or $form.TopMost -or $form.NativeTopmost -or $topButton.Latched -or -not $desktopButton.Latched){throw 'Desktop mode is not exclusive'}
         $click.Invoke($desktopButton,@([EventArgs]::Empty))|Out-Null
         if($form.DesktopPinned -or $script:preferences.WindowMode -ne 'Normal'){throw 'Pin release failed'}
-        $colorPicker.SelectedIndex=1
+        $click.Invoke($settingsButton,@([EventArgs]::Empty))|Out-Null
+        if(-not $script:settingsForm -or $settingsButton.Image.Width -ne 16){throw 'Settings icon/dialog failed'}
+        $script:diagnosticSnapshot=[pscustomobject]@{Utc='2026-01-01T00:00:00Z';CollectionDurationMs=1;Metrics=[pscustomobject]@{sample=[pscustomobject]@{Value=$null;Unit='bytes';Status='unavailable';Reason='test'}}}
+        Update-DiagnosticsDisplay
+        if($script:diagnosticsText.Text -notlike '*欠測*'){throw 'Diagnostics missing-value display failed'}
+        $script:diagnosticSnapshot=$null
+        $script:settingsPalette.SelectedIndex=1
         if($script:preferences.Palette -ne 'Mint' -or $form.BackColor.ToArgb() -ne [Drawing.ColorTranslator]::FromHtml($script:gadgetPalettes.Mint.Body).ToArgb()){throw 'Palette selection failed'}
         $saved=Read-GadgetPreferences
         if($saved.Palette -ne 'Mint' -or $saved.WindowMode -ne 'Normal'){throw 'Preferences persistence failed'}
@@ -404,7 +488,16 @@ try {
         $rows=@(Import-Csv -LiteralPath $csv)
         if(-not @($rows|Where-Object Action -eq window_mode).Count){throw 'CSV log export failed'}
         $script:logForm.Hide()
-        $colorPicker.SelectedIndex=0
+        $script:settingsPalette.SelectedIndex=0
+        $settingsImage=New-Object Drawing.Bitmap($script:settingsForm.Width,$script:settingsForm.Height)
+        try{$script:settingsForm.DrawToBitmap($settingsImage,(New-Object Drawing.Rectangle(0,0,$script:settingsForm.Width,$script:settingsForm.Height)));$settingsImage.Save((Join-Path $PSScriptRoot 'settings-preview.png'))}finally{$settingsImage.Dispose()}
+        $script:settingsForm.Hide()
+        if($script:heartbeatWrites -ne 1){throw 'Heartbeat was not throttled'}
+        $script:diagnosticEngine=[pscustomobject]@{LatestJson='invalid-json';LastError=$null}
+        Update-DiagnosticsCache
+        if($script:diagnosticSnapshot){throw 'Invalid diagnostics escaped isolation'}
+        $script:diagnosticEngine=$null
+        $diagnosticLabel.Text='診断: 観測専用'
         $bitmap = New-Object Drawing.Bitmap($form.Width,$form.Height)
         try { $form.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$form.Width,$form.Height))); $bitmap.Save((Join-Path $PSScriptRoot 'mini-ui-preview.png')) }
         finally { $bitmap.Dispose() }
@@ -412,19 +505,27 @@ try {
         Write-Output 'PASS: RAM graphs, candidate labels, Pause/Resume, manual button result, off-screen render'
         Write-Output 'PASS: pixel cat artwork, custom hide/close-to-tray, restore menu, no taskbar button'
         Write-Output 'PASS: native topmost and desktop mode exclusivity, pin release, palette persistence, log viewer and CSV export'
+        Write-Output 'PASS: pixel settings icon, palette in settings dialog, heartbeat write throttling'
     } else {
+        try{
+            $config=Get-DiagnosticsConfiguration
+            if($config.Enabled){$script:diagnosticEngine=Start-Diagnostics $DataDirectory $config.IntervalSeconds}else{$diagnosticLabel.Text='診断: 無効'}
+        }catch{Write-GadgetEvent 'diagnostics_unavailable' $_.Exception.Message;$diagnosticLabel.Text='診断: 取得不可'}
         $hook = [MemoryWatchNative]::StartForegroundTracking($PID)
         if ($hook -eq [IntPtr]::Zero) { throw 'Foreground tracking unavailable' }
         $form.Add_Shown({ Apply-GadgetWindowMode $script:preferences.WindowMode;Update-MiniStatus -MonitorDue; $timer.Start() })
         [Windows.Forms.Application]::Run($form)
     }
 } finally {
+    if($script:diagnosticEngine){$script:diagnosticEngine.Dispose()}
     Write-GadgetEvent 'exited'
     if($script:logForm -and -not $script:logForm.IsDisposed){$script:logForm.Dispose()}
+    if($script:settingsForm -and -not $script:settingsForm.IsDisposed){$script:settingsForm.Dispose()}
     if ($hook -ne [IntPtr]::Zero) { [void][MemoryWatchNative]::UnhookWinEvent($hook) }
     $tooltip.Dispose()
     $timer.Stop(); $timer.Dispose(); $tray.Visible = $false; $tray.Dispose(); $menu.Dispose(); $form.Dispose()
     $catBitmap.Dispose(); $catIcon.Dispose()
+    $settingsBitmap.Dispose()
     if ($ownsMutex) { $mutex.ReleaseMutex() }
     $mutex.Dispose()
 }

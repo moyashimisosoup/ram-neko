@@ -10,7 +10,7 @@ A tiny Windows memory-monitor gadget with a pixel cat, tactile 8-bit controls, m
 - 凸面ボタンはクリック中にへこみ、一時停止・固定の選択中はへこんだ状態を維持。
 - **デスクトップに固定**：位置をロックし、通常アプリの背面へ配置。
 - **前面に固定**：通常アプリより常に前面へ。2つの固定モードは排他的。
-- ラベンダー・ミント・ピーチ・スカイ・ナイトの5配色。配色・位置・固定モードを再起動後も復元。
+- 8bit設定アイコンからラベンダー・ミント・ピーチ・スカイ・ナイトの5配色を選択。配色・位置・固定モードを再起動後も復元。
 - ログ表示、更新、CSV保存。監視・手動整理・結果・配色・固定・表示操作をローカルに記録。
 - ネコの通知領域アイコン。×／隠すで収納、ダブルクリックで復帰、右クリックメニューから終了。
 
@@ -54,6 +54,10 @@ Windows already reclaims working sets as needed. Unconditional periodic RAM purg
 
 ## Logs and settings
 
+M1 adds an **observation-only** diagnostic worker (default 60 seconds) and a read-only diagnostics tab under the settings icon. Physical/commit memory, OS low-memory notification, CPU, paging/disk counters, major process snapshots and observer load are recorded with units and missing-data status. These values do **not** change automatic cleanup decisions. Exact hard-fault counts and interaction latency remain explicitly unmeasured. See the [M1 audit, schema, tests and limitations](docs/M1-DIAGNOSTICS.md) and [M2–M4 design](docs/M2-M4-PLAN.md).
+
+`data/diagnostics.jsonl` rotates at a strict 5 MiB plus one backup. Configure observation with `diagnostics.json`; disabling it does not disable the legacy monitor. The main state heartbeat is now written at most once per minute, while display/candidate sampling remains at five seconds. The snapshot is cached; diagnostic collection and its log I/O run on a separate worker. No performance improvement or sustained deployment is claimed by merely obtaining counters.
+
 All runtime files live in `data/`. Monitor/event JSONL logs rotate at 5 MB with one backup each. The viewer shows recent rows; CSV export includes all retained monitor/event rows. Retention depends on file size, not days. Preferences store palette, window mode and position. These files, test output, exports and local audit records are excluded from Git by a reviewed-file allowlist in `.gitignore`.
 
 ## Tests
@@ -66,4 +70,4 @@ powershell.exe -NoProfile -File .\Test-All.ps1 -SkipInstalled
 powershell.exe -NoProfile -File .\Test-All.ps1
 ```
 
-The tests exercise candidate filters, pressure/cooldown rules, graph calculations, manual button routing with synthetic data, native pin modes, theme persistence, log export and tray restoration. Actual native trimming tests touch only disposable test processes. Preview images use synthetic memory values.
+The tests exercise candidate filters, pressure/cooldown rules, graph calculations, manual button routing with synthetic data, native pin modes, theme persistence, log export and tray restoration. M1 adds injectable source/clock diagnostics tests and real read-only API checks. Actual native trimming tests touch only disposable test processes. Preview images use synthetic memory values.

@@ -1,6 +1,7 @@
 param([switch]$LibraryOnly, [switch]$ObserveOnly, [string]$DataDirectory = "$PSScriptRoot\data")
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\Diagnostics.ps1"
 $script:trimPolicy = Get-Content -LiteralPath "$PSScriptRoot\policy.json" -Raw | ConvertFrom-Json
 if (@($script:trimPolicy.AllowedNames).Count -eq 0 -or @($script:trimPolicy.AllowedNames | Where-Object { $_ -notin @('chrome','msedge','firefox') }).Count -or
     $script:trimPolicy.MinimumWorkingSetMB -lt 150 -or $script:trimPolicy.MinimumAgeSeconds -lt 300 -or
@@ -141,7 +142,7 @@ function Write-MemoryLog($Entry) {
     $Entry | ConvertTo-Json -Depth 6 -Compress | Add-Content -LiteralPath $path -Encoding UTF8
 }
 
-function Invoke-MemoryWatch([switch]$Manual, [string]$ProtectedName = '') {
+function Invoke-MemoryWatch([switch]$Manual, [string]$ProtectedName = '', $DiagnosticsReference = $null) {
     New-Item -ItemType Directory -Path $DataDirectory -Force | Out-Null
     # File lock also excludes concurrent manual invocations. No persistent process.
     try { $lock = [IO.File]::Open((Join-Path $DataDirectory 'monitor.lock'), 'OpenOrCreate', 'ReadWrite', 'None') }
@@ -158,6 +159,7 @@ function Invoke-MemoryWatch([switch]$Manual, [string]$ProtectedName = '') {
         $memory = Get-MemorySnapshot
         $decision = Get-MemoryDecision $memory.AvailableMB $memory.TotalMB $state.LowSamples $state.LastActionUtc $now
         $entry = [ordered]@{ Utc = $now.ToString('o'); AvailableMB = $memory.AvailableMB; TotalMB = $memory.TotalMB; LowSamples = $decision.LowSamples; Action = 'observe'; Results = @() }
+        if($null -ne $DiagnosticsReference){$entry.LogSchemaVersion=2;$entry.Diagnostics=$DiagnosticsReference}
         $state.LowSamples = $decision.LowSamples
         $state.LastSampleUtc = $now.ToString('o')
         if (($decision.Trim -or $Manual) -and -not $ObserveOnly) {
